@@ -1,0 +1,33 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.Python
+
+# Test / type-checker caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# macOS
+.DS_Store
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Streamlit
+.streamlit/
+
+# OpenEvolve source — cloned separately per README; do NOT commit
+third_party/openevolve/
+
+# Runtime outputs — regenerate via the GUI or CLI demos
+generated_experiments/*
+!generated_experiments/.gitkeep
+
+# Optional: scratch / personal files
+Test.txt
+*.local.*

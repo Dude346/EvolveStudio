@@ -1,0 +1,82 @@
+# EvolveStudio template: OpenEvolve config for local Ollama `gpt-oss:20b`.
+#
+# This is a small, demo-sized config. The EvolveStudio compiler copies this
+# file into each generated experiment and may override individual fields
+# (e.g. system_message, feature_dimensions) based on the user's problem spec.
+#
+# Prereqs:
+#   - `ollama serve` running on localhost (default port 11434).
+#   - `ollama pull gpt-oss:20b` already done.
+
+# ---- Top-level evolution settings ------------------------------------------
+max_iterations: 10              # Small for demos; bump for real runs.
+checkpoint_interval: 5          # Save a checkpoint every N iterations.
+log_level: "INFO"
+random_seed: 42                 # Reproducibility. Set null for nondeterministic runs.
+
+diff_based_evolution: true      # Patch-style edits (cheaper, stays on-topic).
+max_code_length: 10000          # Hard cap on candidate program size (chars).
+
+# ---- LLM configuration -----------------------------------------------------
+llm:
+  # "Simple form": a single primary model, no ensemble. OpenEvolve's
+  # config.__post_init__ promotes this into a one-element `models` list.
+  primary_model: "gpt-oss:20b"
+  primary_model_weight: 1.0
+
+  # Ollama exposes an OpenAI-compatible endpoint at /v1.
+  api_base: "http://localhost:11434/v1"
+  # Ollama ignores the key but the `openai` SDK requires a non-empty string.
+  api_key: "ollama"
+
+  # Generation params. `gpt-oss:20b` is a reasoning model so leave room.
+  temperature: 0.7
+  top_p: 0.95
+  max_tokens: 4096
+
+  # Local 20B inference is slow; give the request room before timing out.
+  timeout: 180
+  retries: 2
+  retry_delay: 5
+
+# ---- Prompt configuration --------------------------------------------------
+prompt:
+  # Compiler will typically overwrite this with a problem-specific message.
+  system_message: "You are an expert coder helping to improve programs through evolution."
+  num_top_programs: 3           # Top-K programs to show in the prompt.
+  num_diverse_programs: 2       # Diverse MAP-Elites picks to show alongside.
+  include_artifacts: true       # Surface evaluator stdout/stderr to the LLM.
+
+# ---- Database / MAP-Elites -------------------------------------------------
+database:
+  population_size: 30           # Demo-sized in-memory population.
+  archive_size: 10              # Elite archive.
+  num_islands: 2                # Small island count — keeps runs tractable.
+  migration_interval: 20
+  migration_rate: 0.1
+
+  # MAP-Elites feature axes. "complexity" + "diversity" are built-in. Replace
+  # with custom metric names returned by your evaluator for problem-specific
+  # quality-diversity (e.g. ["accuracy", "memory"]).
+  feature_dimensions:
+    - "complexity"
+    - "diversity"
+  feature_bins: 10
+
+# ---- Evaluator -------------------------------------------------------------
+evaluator:
+  timeout: 60                   # Per-candidate evaluation timeout (seconds).
+  max_retries: 2
+  # Single in-flight evaluation; Ollama serializes per-model on the server
+  # side, so fanning out doesn't help and can starve the LLM.
+  parallel_evaluations: 1
+  cascade_evaluation: false     # Off for demos. Enable when you add stages.
+
+# ---- Evolution trace -------------------------------------------------------
+# Required by the EvolveStudio visualizer (lineage, diffs, failures).
+evolution_trace:
+  enabled: true
+  format: "jsonl"
+  include_code: true
+  include_prompts: true
+  buffer_size: 1                # Flush after every iteration for live viewing.
