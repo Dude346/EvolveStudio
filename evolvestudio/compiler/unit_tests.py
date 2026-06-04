@@ -92,16 +92,17 @@ _EVALUATOR_TEMPLATE = Template(
     '''"""Evaluator for ${slug}.
 
 Loads the candidate, calls `${function_name}` on each test case under a
-per-test timeout enforced via SIGALRM (Unix-only), and scores by fraction
-of tests passed.
+per-test wall-clock timeout, and scores by fraction of tests passed.
 
-Why SIGALRM and not ThreadPoolExecutor: a runaway thread can't be killed
-in pure Python, so the executor's __exit__ blocks waiting for it. SIGALRM
-actually interrupts the running Python at the next bytecode boundary.
+Timeout is enforced with a daemon thread + join(timeout): this works in
+ANY thread (OpenEvolve evaluates candidates in worker threads, where
+signal-based timeouts raise "signal only works in main thread"). On
+timeout the worker thread is abandoned (it's a daemon, so it can't block
+process exit) and the test is marked failed.
 """
 
 import importlib.util
-import signal
+import threading
 import time
 import traceback
 
@@ -116,10 +117,6 @@ class _CandidateTimeout(Exception):
     pass
 
 
-def _alarm_handler(signum, frame):
-    raise _CandidateTimeout()
-
-
 def _load_program(program_path):
     spec = importlib.util.spec_from_file_location("candidate_program", program_path)
     module = importlib.util.module_from_spec(spec)
@@ -128,14 +125,23 @@ def _load_program(program_path):
 
 
 def _run_with_timeout(fn, args, timeout_s):
-    """Run `fn(*args)` with a SIGALRM-enforced wall-clock budget."""
-    old_handler = signal.signal(signal.SIGALRM, _alarm_handler)
-    signal.setitimer(signal.ITIMER_REAL, float(timeout_s))
-    try:
-        return fn(*args)
-    finally:
-        signal.setitimer(signal.ITIMER_REAL, 0)  # cancel pending alarm
-        signal.signal(signal.SIGALRM, old_handler)
+    """Run `fn(*args)` with a wall-clock budget. Thread-safe (no signals)."""
+    box = {}
+
+    def _target():
+        try:
+            box["value"] = fn(*args)
+        except Exception as e:  # noqa: BLE001
+            box["error"] = e
+
+    t = threading.Thread(target=_target, daemon=True)
+    t.start()
+    t.join(float(timeout_s))
+    if t.is_alive():
+        raise _CandidateTimeout()
+    if "error" in box:
+        raise box["error"]
+    return box.get("value")
 
 
 def evaluate(program_path):

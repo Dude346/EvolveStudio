@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>EvolveStudio</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&family=Space+Grotesk:wght@600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- Top chrome -->
+  <div class="topbar">
+    <div class="wordmark">Evolve<span class="dot">Studio</span></div>
+    <nav class="tabs">
+      <button class="tab active" data-screen="compose">Compose</button>
+      <button class="tab" data-screen="run">Run</button>
+      <button class="tab" data-screen="results">Results</button>
+    </nav>
+  </div>
+
+  <div class="shell">
+    <!-- Left rail -->
+    <aside class="rail">
+      <div class="rail-section">
+        <h3>Experiment</h3>
+        <select id="rail-exp-select"></select>
+        <div id="rail-exp-meta" class="rail-exp-meta"></div>
+      </div>
+      <div class="rail-section">
+        <h3>Run status</h3>
+        <div class="status-line">
+          <span id="rail-status-dot" class="status-dot"></span>
+          <span id="rail-status-text">Idle</span>
+        </div>
+      </div>
+    </aside>
+
+    <!-- Main -->
+    <main class="main">
+
+      <!-- ===== Compose ===== -->
+      <section class="screen active" id="screen-compose">
+        <div class="section-title">Compose an experiment</div>
+        <div class="section-sub">Type a problem, paste the three OpenEvolve input files, save.</div>
+
+        <div class="chips" id="demo-chips">
+          <button class="chip" data-demo="bubble_sort">
+            <div class="chip-title">Bubble sort</div>
+            <div class="chip-sub">8 unit tests · easy</div>
+          </button>
+          <button class="chip" data-demo="edit_distance">
+            <div class="chip-title">Edit distance</div>
+            <div class="chip-sub">naive recursion · must evolve to DP</div>
+          </button>
+          <button class="chip" data-demo="euler">
+            <div class="chip-title">Euler #1</div>
+            <div class="chip-sub">single-answer numeric</div>
+          </button>
+        </div>
+
+        <div class="stack">
+          <div>
+            <label class="field-label">Title</label>
+            <input type="text" id="c-title" placeholder="A one-line name for the problem" />
+            <div class="slug-preview">Will save as <span class="mono" id="c-slug">generated_experiments/…/</span></div>
+          </div>
+          <div>
+            <label class="field-label">Problem statement</label>
+            <textarea id="c-statement" rows="3" placeholder="What should the program do? (Plain English — feeds the LLM's system prompt.)"></textarea>
+          </div>
+        </div>
+
+        <div style="margin-top:18px">
+          <div class="filetabs" id="c-filetabs">
+            <button class="filetab active" data-file="initial">initial_program.py</button>
+            <button class="filetab" data-file="evaluator">evaluator.py</button>
+            <button class="filetab" data-file="config">config.yaml</button>
+          </div>
+          <textarea class="editor" id="c-initial" spellcheck="false" placeholder="# Paste your starting program here, with EVOLVE-BLOCK markers around the part to evolve."></textarea>
+          <textarea class="editor hidden" id="c-evaluator" spellcheck="false" placeholder="# Paste your evaluator. Must define evaluate(program_path) returning a dict or EvaluationResult."></textarea>
+          <textarea class="editor hidden" id="c-config" spellcheck="false" placeholder="# Paste your OpenEvolve config YAML here."></textarea>
+        </div>
+
+        <div style="margin-top:18px">
+          <button class="btn btn-primary btn-full" id="c-save">Save experiment</button>
+        </div>
+      </section>
+
+      <!-- ===== Run ===== -->
+      <section class="screen" id="screen-run">
+        <div id="run-noexp" class="placeholder">Compose or select an experiment first.</div>
+        <div id="run-body" style="display:none">
+          <div class="run-head">
+            <div class="run-slug mono" id="r-slug"></div>
+            <div class="run-path" id="r-path"></div>
+          </div>
+
+          <div class="field-row">
+            <div>
+              <label class="field-label">Iterations</label>
+              <input type="number" id="r-iterations" min="1" max="10000" value="10" />
+            </div>
+            <div>
+              <label class="field-label">Python interpreter</label>
+              <input type="text" id="r-python" />
+            </div>
+          </div>
+          <div style="margin-top:16px">
+            <label class="field-label">Output directory (blank = timestamped default)</label>
+            <input type="text" id="r-output" placeholder="" />
+          </div>
+
+          <details class="cmd">
+            <summary>Command preview</summary>
+            <pre id="r-cmd"></pre>
+          </details>
+
+          <div class="btn-row">
+            <button class="btn btn-primary" id="r-exec">Execute OpenEvolve</button>
+            <button class="btn" id="r-stop" disabled>Stop</button>
+          </div>
+
+          <div id="r-banner"></div>
+          <div id="r-logwrap" style="display:none">
+            <label class="field-label" style="margin-top:16px">Live log tail</label>
+            <div class="logtail mono" id="r-logtail"></div>
+          </div>
+
+          <div class="hint">Prereqs: <span class="mono">ollama serve</span> on :11434, and <span class="mono">gpt-oss:20b</span> pulled.</div>
+        </div>
+      </section>
+
+      <!-- ===== Results ===== -->
+      <section class="screen" id="screen-results">
+        <div id="res-noexp" class="placeholder">Select an experiment with at least one run.</div>
+        <div id="res-body" style="display:none">
+          <div style="margin-bottom:18px;max-width:320px">
+            <label class="field-label">Run</label>
+            <select id="res-run-select"></select>
+          </div>
+
+          <div class="metrics" id="res-metrics"></div>
+
+          <div class="results-split">
+            <div class="graph-panel">
+              <svg id="lineage-svg"></svg>
+              <div class="graph-empty" id="graph-empty">No candidates yet — results populate live.</div>
+            </div>
+            <div class="inspector" id="inspector">
+              <div class="insp-empty">Click a node in the tree to inspect its code and diff.</div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+  <script src="/lineage.js"></script>
+  <script src="/app.js"></script>
+</body>
+</html>

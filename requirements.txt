@@ -1,0 +1,14 @@
+# EvolveStudio dependencies (install into the OpenEvolve conda env).
+#
+# OpenEvolve itself is installed separately from third_party/ (editable):
+#     pip install -e third_party/openevolve
+#
+# Then:
+#     pip install -r requirements.txt
+
+# Web backend
+fastapi
+uvicorn
+
+# Legacy Streamlit GUI (kept alongside the new FastAPI UI; optional)
+streamlit
