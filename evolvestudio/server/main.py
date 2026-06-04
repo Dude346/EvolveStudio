@@ -12,12 +12,15 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Optional
 
+import json as _json
+
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from evolvestudio import experiments as exp
+from evolvestudio import harness_gen as gen
 from evolvestudio.server import lineage as lin
 from evolvestudio.server import runs as runs
 
@@ -46,6 +49,13 @@ class RunBody(BaseModel):
     iterations: Optional[int] = 10
     python: str = exp.DEFAULT_PY
     output_dir: Optional[str] = None
+    target_score: Optional[float] = 1.0  # stop early once a candidate hits this
+    model: Optional[str] = None  # evolution-loop model (rewrites config.yaml)
+
+
+class GenerateBody(BaseModel):
+    statement: str
+    model: Optional[str] = None
 
 
 # --------------------------------------------------------------------------
@@ -84,6 +94,13 @@ def get_experiment(slug: str) -> dict:
 # --------------------------------------------------------------------------
 
 
+@app.get("/api/models")
+def list_models() -> dict:
+    """Live list of installed Ollama chat models (for the UI dropdowns)."""
+    names = gen.list_ollama_models()
+    return {"models": names, "default": gen.DEFAULT_MODEL}
+
+
 @app.get("/api/demos")
 def list_demos() -> list[str]:
     return list(exp.DEMOS.keys())
@@ -98,18 +115,75 @@ def get_demo(kind: str) -> dict:
 
 
 # --------------------------------------------------------------------------
+# LLM harness generation
+# --------------------------------------------------------------------------
+
+
+@app.post("/api/generate")
+def generate(body: GenerateBody) -> dict:
+    """Synchronous: gpt-oss -> spec -> compiled harness. Returns {slug, spec, files}."""
+    model = body.model or gen.DEFAULT_MODEL
+    try:
+        return gen.generate_and_compile(body.statement, model=model)
+    except gen.HarnessGenError as e:
+        raise HTTPException(status_code=422, detail=str(e))
+
+
+@app.post("/api/generate/stream")
+def generate_stream(body: GenerateBody) -> StreamingResponse:
+    """Streaming (SSE): live model tokens, then a final result/error event."""
+    model = body.model or gen.DEFAULT_MODEL
+    statement = body.statement
+
+    def event_gen():
+        acc = []
+        try:
+            for delta in gen.stream_raw(statement, model=model):
+                acc.append(delta)
+                yield f"data: {_json.dumps({'type': 'token', 'text': delta})}\n\n"
+            full = "".join(acc)
+            spec = gen._validate_and_normalize(gen._extract_json(full))
+            exp_dir = gen.compile_spec(spec, statement)
+            payload = {
+                "type": "result",
+                "slug": exp_dir.name,
+                "spec": spec,
+                "files": {
+                    "initial_program": (exp_dir / "initial_program.py").read_text(),
+                    "evaluator": (exp_dir / "evaluator.py").read_text(),
+                    "config": (exp_dir / "config.yaml").read_text(),
+                },
+            }
+            yield f"data: {_json.dumps(payload)}\n\n"
+        except gen.HarnessGenError as e:
+            yield f"data: {_json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+        except Exception as e:  # noqa: BLE001
+            yield f"data: {_json.dumps({'type': 'error', 'message': f'unexpected: {e}'})}\n\n"
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+# --------------------------------------------------------------------------
 # Runs
 # --------------------------------------------------------------------------
 
 
 @app.post("/api/runs")
 def create_run(body: RunBody) -> dict:
+    # If a model was chosen, bake it into the experiment's config before launch.
+    if body.model:
+        exp.set_experiment_model(body.slug, body.model)
     try:
         return runs.launch_run(
             slug=body.slug,
             iterations=body.iterations,
             python_exe=body.python,
             output_dir=body.output_dir,
+            target_score=body.target_score,
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))

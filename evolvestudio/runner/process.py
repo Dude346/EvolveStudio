@@ -105,8 +105,14 @@ def launch_run(
     iterations: Optional[int],
     python_exe: str,
     output_dir: Optional[str] = None,
+    target_score: Optional[float] = 1.0,
 ) -> dict:
-    """Launch OpenEvolve for `slug`. Returns {run_id, pid, output_dir}."""
+    """Launch OpenEvolve for `slug`. Returns {run_id, pid, output_dir}.
+
+    target_score defaults to 1.0 so the run stops as soon as a candidate
+    passes everything (combined_score >= 1.0) instead of burning the full
+    iteration budget. Pass None to always run all iterations.
+    """
     exp_dir = GENERATED_ROOT / slug
     if not exp_dir.is_dir():
         raise FileNotFoundError(f"experiment not found: {slug}")
@@ -114,7 +120,7 @@ def launch_run(
     out_dir = Path(output_dir) if output_dir else default_output_dir(exp_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    argv = build_argv(exp_dir, iterations, out_dir, python_exe)
+    argv = build_argv(exp_dir, iterations, out_dir, python_exe, target_score=target_score)
 
     stdout_f = (out_dir / "stdout.log").open("w")
     stderr_f = (out_dir / "stderr.log").open("w")
@@ -194,60 +200,76 @@ def _best_score(run) -> Optional[float]:
     return best
 
 
-def run_status(run_id: str) -> dict:
-    """Return {state, iters_done, best_score, log_tail, output_dir}.
-
-    state in {"running", "done", "error", "unknown"}.
-    """
-    entry = _get_entry(run_id)
-    if entry is None:
-        return {
-            "state": "unknown",
-            "iters_done": 0,
-            "best_score": None,
-            "log_tail": "",
-            "output_dir": None,
-        }
-
-    out_dir = Path(entry["output_dir"])
-    pid = entry.get("pid")
-    proc = _PROCS.get(run_id)
-
-    # Determine liveness / final state.
-    if proc is not None and proc.poll() is not None:
-        rc = proc.returncode
-        state = "done" if rc == 0 else "error"
-    elif proc is not None:
-        state = "running"
-    else:
-        # Launched by a prior process; fall back to pid liveness.
-        state = "running" if _pid_alive(pid) else "done"
-
+def _status_from_dir(out_dir: Path, state: str, elapsed: Optional[float]) -> dict:
     run = parse_run(out_dir)
-    iters_done = len(run.trace_rows)
-    best = _best_score(run)
-
     log_tail = ""
     stdout_log = out_dir / "stdout.log"
     if stdout_log.exists():
         log_tail = _tail(stdout_log, 40)
-
-    started_at = entry.get("started_at") or 0
-    elapsed = (time.time() - started_at) if started_at else None
-
     return {
         "state": state,
-        "iters_done": iters_done,
-        "best_score": best,
+        "iters_done": len(run.trace_rows),
+        "best_score": _best_score(run),
         "log_tail": log_tail,
         "elapsed": elapsed,
         "output_dir": str(out_dir),
     }
 
 
-def resolve_output_dir(run_id: str) -> Optional[Path]:
-    """Map a run_id to its output directory (via registry)."""
+def run_status(run_id: str) -> dict:
+    """Return {state, iters_done, best_score, log_tail, elapsed, output_dir}.
+
+    state in {"running", "done", "error", "unknown"}.
+    """
     entry = _get_entry(run_id)
+
     if entry is None:
+        # Not registry-tracked (e.g. an older run, or one started via the CLI).
+        # If we can find the dir on disk, report a files-only "done" status.
+        out_dir = _scan_for_run(run_id)
+        if out_dir is None:
+            return {
+                "state": "unknown",
+                "iters_done": 0,
+                "best_score": None,
+                "log_tail": "",
+                "elapsed": None,
+                "output_dir": None,
+            }
+        return _status_from_dir(out_dir, "done", None)
+
+    out_dir = Path(entry["output_dir"])
+    pid = entry.get("pid")
+    proc = _PROCS.get(run_id)
+
+    if proc is not None and proc.poll() is not None:
+        state = "done" if proc.returncode == 0 else "error"
+    elif proc is not None:
+        state = "running"
+    else:
+        state = "running" if _pid_alive(pid) else "done"
+
+    started_at = entry.get("started_at") or 0
+    elapsed = (time.time() - started_at) if started_at else None
+    return _status_from_dir(out_dir, state, elapsed)
+
+
+def _scan_for_run(run_id: str) -> Optional[Path]:
+    """Find a run directory named run_id under any experiment."""
+    if not GENERATED_ROOT.is_dir():
         return None
-    return Path(entry["output_dir"])
+    for exp_dir in GENERATED_ROOT.iterdir():
+        if not exp_dir.is_dir():
+            continue
+        cand = exp_dir / run_id
+        if cand.is_dir():
+            return cand
+    return None
+
+
+def resolve_output_dir(run_id: str) -> Optional[Path]:
+    """Map a run_id to its output directory: registry first, then disk scan."""
+    entry = _get_entry(run_id)
+    if entry is not None:
+        return Path(entry["output_dir"])
+    return _scan_for_run(run_id)

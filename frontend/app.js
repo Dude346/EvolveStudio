@@ -1,16 +1,20 @@
-/* EvolveStudio frontend — tab routing, fetch calls, Compose/Run/Results. */
+/* EvolveStudio frontend — chat-like generation, run, results. */
 (function () {
   "use strict";
 
   const state = {
     screen: "compose",
     experiments: [],
-    selectedSlug: null,
-    expDetail: null, // {title, statement, path, files}
+    activeSlug: null, // experiment to run
+    expDetail: null,
+    genStatement: "", // the problem text that produced the current harness
     runId: null,
     statusTimer: null,
     resultsTimer: null,
-    selectedRunId: null,
+    resultsSlug: null,
+    resultsRunId: null,
+    models: [],
+    defaultModel: null,
   };
 
   // ---------- fetch helpers ----------
@@ -26,7 +30,6 @@
     }
     return res.json();
   }
-
   const getJSON = (p) => api(p);
   const postJSON = (p, body) =>
     api(p, {
@@ -44,16 +47,21 @@
         .replace(/^_+|_+$/g, "") || "experiment"
     );
   }
-
   function fmtElapsed(sec) {
     if (sec == null) return "—";
     if (sec < 60) return `${Math.round(sec)}s`;
-    const m = Math.floor(sec / 60);
-    const s = Math.round(sec % 60);
-    return `${m}m ${s}s`;
+    return `${Math.floor(sec / 60)}m ${Math.round(sec % 60)}s`;
   }
 
-  // ---------- tab routing ----------
+  // ---------- top-bar status ----------
+
+  function setTopStatus(stateName, text) {
+    document.getElementById("top-status-dot").className =
+      "status-dot" + (stateName ? " " + stateName : "");
+    document.getElementById("top-status-text").textContent = text;
+  }
+
+  // ---------- routing ----------
 
   function showScreen(name) {
     state.screen = name;
@@ -66,158 +74,269 @@
     if (name === "run") renderRun();
     if (name === "results") renderResults();
   }
-
   document.querySelectorAll(".tab").forEach((t) =>
     t.addEventListener("click", () => showScreen(t.dataset.screen))
   );
 
-  // ---------- experiments (rail) ----------
+  // ---------- experiments ----------
 
   async function loadExperiments() {
     state.experiments = await getJSON("/api/experiments");
-    const sel = document.getElementById("rail-exp-select");
-    sel.innerHTML = "";
-    if (!state.experiments.length) {
-      const opt = document.createElement("option");
-      opt.textContent = "(none yet)";
-      opt.value = "";
-      sel.appendChild(opt);
-      state.selectedSlug = null;
-    } else {
-      state.experiments.forEach((e) => {
-        const opt = document.createElement("option");
-        opt.value = e.slug;
-        opt.textContent = e.slug;
-        sel.appendChild(opt);
-      });
-      if (!state.selectedSlug || !state.experiments.find((e) => e.slug === state.selectedSlug)) {
-        state.selectedSlug = state.experiments[0].slug;
-      }
-      sel.value = state.selectedSlug;
+    if (!state.activeSlug && state.experiments.length) {
+      state.activeSlug = state.experiments[0].slug;
     }
-    updateRailMeta();
+    fillExpSelect("run-exp-select", state.activeSlug);
   }
 
-  function updateRailMeta() {
-    const meta = document.getElementById("rail-exp-meta");
-    const e = state.experiments.find((x) => x.slug === state.selectedSlug);
-    meta.textContent = e ? e.title : "";
+  function fillExpSelect(id, selected) {
+    const sel = document.getElementById(id);
+    if (!sel) return;
+    sel.innerHTML = "";
+    state.experiments.forEach((e) => {
+      const o = document.createElement("option");
+      o.value = e.slug;
+      o.textContent = e.slug;
+      sel.appendChild(o);
+    });
+    if (selected) sel.value = selected;
   }
 
-  document.getElementById("rail-exp-select").addEventListener("change", (ev) => {
-    state.selectedSlug = ev.target.value || null;
-    state.expDetail = null;
-    updateRailMeta();
-    if (state.screen === "run") renderRun();
-    if (state.screen === "results") renderResults();
-  });
+  // ---------- models (sidebar) ----------
 
-  // ---------- Compose ----------
+  async function loadModels() {
+    const statusEl = document.getElementById("model-status");
+    let r;
+    try {
+      r = await getJSON("/api/models");
+    } catch (e) {
+      r = { models: [], default: null };
+    }
+    state.models = r.models || [];
+    state.defaultModel = r.default;
+    if (!state.models.length) {
+      // Ollama unreachable or no chat models.
+      state.models = state.defaultModel ? [state.defaultModel] : [];
+      statusEl.textContent = "⚠ Ollama not reachable — is `ollama serve` running?";
+    } else {
+      statusEl.textContent = `${state.models.length} models installed`;
+    }
+    // Keep a valid active model.
+    if (!state.activeModel || !state.models.includes(state.activeModel)) {
+      state.activeModel =
+        state.defaultModel && state.models.includes(state.defaultModel)
+          ? state.defaultModel
+          : state.models[0] || null;
+    }
+    renderModelRail();
+  }
 
-  const composeEls = {
-    title: document.getElementById("c-title"),
-    statement: document.getElementById("c-statement"),
-    slug: document.getElementById("c-slug"),
-    initial: document.getElementById("c-initial"),
-    evaluator: document.getElementById("c-evaluator"),
-    config: document.getElementById("c-config"),
-    save: document.getElementById("c-save"),
+  function renderModelRail() {
+    const list = document.getElementById("model-list");
+    list.innerHTML = "";
+    if (!state.models.length) {
+      list.innerHTML = '<div class="rail-note">No models found.</div>';
+      return;
+    }
+    state.models.forEach((m) => {
+      const item = document.createElement("button");
+      item.className = "model-item" + (m === state.activeModel ? " selected" : "");
+      item.innerHTML = `<span class="model-radio"></span><span>${m}</span>`;
+      item.addEventListener("click", () => {
+        state.activeModel = m;
+        renderModelRail();
+      });
+      list.appendChild(item);
+    });
+  }
+
+  document.getElementById("model-refresh").addEventListener("click", loadModels);
+
+  // ============================================================
+  // Compose — chat-like generation
+  // ============================================================
+
+  const genEls = {
+    input: document.getElementById("gen-input"),
+    btn: document.getElementById("gen-btn"),
+    progress: document.getElementById("gen-progress"),
+    statusText: document.getElementById("gen-status-text"),
+    stream: document.getElementById("gen-stream"),
+    result: document.getElementById("gen-result"),
+    title: document.getElementById("g-title"),
+    slug: document.getElementById("g-slug"),
+    meta: document.getElementById("g-meta"),
+    initial: document.getElementById("g-initial"),
+    evaluator: document.getElementById("g-evaluator"),
+    config: document.getElementById("g-config"),
+    regen: document.getElementById("g-regen"),
+    saverun: document.getElementById("g-saverun"),
   };
 
-  composeEls.title.addEventListener("input", () => {
-    composeEls.slug.textContent = `generated_experiments/${slugify(composeEls.title.value)}/`;
+  // file sub-tabs in the generated result
+  document.querySelectorAll("#g-filetabs .filetab").forEach((tab) =>
+    tab.addEventListener("click", () => {
+      document.querySelectorAll("#g-filetabs .filetab").forEach((t) => t.classList.remove("active"));
+      tab.classList.add("active");
+      const w = tab.dataset.file;
+      genEls.initial.classList.toggle("hidden", w !== "initial");
+      genEls.evaluator.classList.toggle("hidden", w !== "evaluator");
+      genEls.config.classList.toggle("hidden", w !== "config");
+    })
+  );
+
+  async function generateHarness(statement) {
+    state.genStatement = statement;
+    genEls.btn.disabled = true;
+    genEls.result.style.display = "none";
+    genEls.progress.style.display = "block";
+    genEls.stream.textContent = "";
+    genEls.statusText.textContent = "Reading the problem and writing tests…";
+
+    const model = state.activeModel || undefined;
+    let res;
+    try {
+      res = await fetch("/api/generate/stream", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ statement, model }),
+      });
+    } catch (e) {
+      return failGen("Could not reach the server: " + e.message);
+    }
+    if (!res.ok || !res.body) {
+      return failGen("Generation request failed (" + res.status + ").");
+    }
+
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const chunk = buf.slice(0, idx).trim();
+          buf = buf.slice(idx + 2);
+          if (!chunk.startsWith("data:")) continue;
+          let ev;
+          try {
+            ev = JSON.parse(chunk.slice(5).trim());
+          } catch (e) {
+            continue;
+          }
+          handleGenEvent(ev);
+        }
+      }
+    } catch (e) {
+      return failGen("Stream interrupted: " + e.message);
+    }
+    genEls.btn.disabled = false;
+  }
+
+  function failGen(msg) {
+    genEls.progress.style.display = "none";
+    genEls.btn.disabled = false;
+    alert(msg);
+  }
+
+  function handleGenEvent(ev) {
+    if (ev.type === "token") {
+      genEls.stream.textContent += ev.text;
+      genEls.stream.scrollTop = genEls.stream.scrollHeight;
+    } else if (ev.type === "result") {
+      genEls.progress.style.display = "none";
+      genEls.result.style.display = "block";
+      genEls.title.value = ev.spec.title || "Generated problem";
+      genEls.slug.textContent = `generated_experiments/${ev.slug}/`;
+      const n = (ev.spec.test_cases || []).length;
+      genEls.meta.innerHTML = `<span class="ok">✓</span> harness generated · function <span class="mono">${ev.spec.function_name}</span> · ${n} test cases`;
+      genEls.initial.value = ev.files.initial_program;
+      genEls.evaluator.value = ev.files.evaluator;
+      genEls.config.value = ev.files.config;
+      state.activeSlug = ev.slug;
+      genEls.btn.disabled = false;
+    } else if (ev.type === "error") {
+      failGen("Generation failed: " + ev.message + "\n\nTry rephrasing the problem.");
+    }
+  }
+
+  genEls.btn.addEventListener("click", () => {
+    const s = genEls.input.value.trim();
+    if (!s) return alert("Paste a problem first.");
+    generateHarness(s);
+  });
+  genEls.regen.addEventListener("click", () => {
+    if (state.genStatement) generateHarness(state.genStatement);
   });
 
-  // demo chips
-  document.querySelectorAll(".chip").forEach((chip) =>
-    chip.addEventListener("click", async () => {
-      try {
-        const d = await getJSON(`/api/demos/${chip.dataset.demo}`);
-        composeEls.title.value = d.title;
-        composeEls.statement.value = d.statement;
-        composeEls.initial.value = d.initial_program;
-        composeEls.evaluator.value = d.evaluator;
-        composeEls.config.value = d.config;
-        composeEls.slug.textContent = `generated_experiments/${slugify(d.title)}/`;
-      } catch (e) {
-        alert("Failed to load demo: " + e.message);
-      }
-    })
-  );
-
-  // file sub-tabs
-  document.querySelectorAll(".filetab").forEach((tab) =>
-    tab.addEventListener("click", () => {
-      document.querySelectorAll(".filetab").forEach((t) => t.classList.remove("active"));
-      tab.classList.add("active");
-      const which = tab.dataset.file;
-      composeEls.initial.classList.toggle("hidden", which !== "initial");
-      composeEls.evaluator.classList.toggle("hidden", which !== "evaluator");
-      composeEls.config.classList.toggle("hidden", which !== "config");
-    })
-  );
-
-  composeEls.save.addEventListener("click", async () => {
-    const title = composeEls.title.value.trim();
-    if (!title) return alert("Title is required.");
-    if (!composeEls.initial.value || !composeEls.evaluator.value || !composeEls.config.value)
-      return alert("All three files (initial_program, evaluator, config) are required.");
-    composeEls.save.disabled = true;
-    composeEls.save.textContent = "Saving…";
+  genEls.saverun.addEventListener("click", async () => {
+    genEls.saverun.disabled = true;
+    genEls.saverun.textContent = "Saving…";
     try {
       const r = await postJSON("/api/experiments", {
-        title,
-        statement: composeEls.statement.value,
-        initial_program: composeEls.initial.value,
-        evaluator: composeEls.evaluator.value,
-        config: composeEls.config.value,
+        title: genEls.title.value.trim() || "Generated problem",
+        statement: state.genStatement,
+        initial_program: genEls.initial.value,
+        evaluator: genEls.evaluator.value,
+        config: genEls.config.value,
       });
-      state.selectedSlug = r.slug;
+      state.activeSlug = r.slug;
+      state.expDetail = null;
       await loadExperiments();
-      document.getElementById("rail-exp-select").value = r.slug;
       showScreen("run");
     } catch (e) {
       alert("Save failed: " + e.message);
     } finally {
-      composeEls.save.disabled = false;
-      composeEls.save.textContent = "Save experiment";
+      genEls.saverun.disabled = false;
+      genEls.saverun.textContent = "Save & go to Run";
     }
   });
 
-  // ---------- Run ----------
+  // ============================================================
+  // Run
+  // ============================================================
 
   async function renderRun() {
     const noexp = document.getElementById("run-noexp");
     const body = document.getElementById("run-body");
-    if (!state.selectedSlug) {
+    if (!state.activeSlug) {
       noexp.style.display = "block";
       body.style.display = "none";
       return;
     }
     noexp.style.display = "none";
     body.style.display = "block";
+    fillExpSelect("run-exp-select", state.activeSlug);
 
-    if (!state.expDetail || state.expDetail.slug !== state.selectedSlug) {
+    if (!state.expDetail || state.expDetail.slug !== state.activeSlug) {
       try {
-        state.expDetail = await getJSON(`/api/experiments/${state.selectedSlug}`);
+        state.expDetail = await getJSON(`/api/experiments/${state.activeSlug}`);
       } catch (e) {
         state.expDetail = null;
       }
     }
-    document.getElementById("r-slug").textContent = state.selectedSlug;
+    document.getElementById("r-slug").textContent = state.activeSlug;
     document.getElementById("r-path").textContent = state.expDetail ? state.expDetail.path : "";
-    if (!document.getElementById("r-python").value)
-      document.getElementById("r-python").value = "/opt/anaconda3/envs/OpenEvolve/bin/python";
+    const py = document.getElementById("r-python");
+    if (!py.value) py.value = "/opt/anaconda3/envs/OpenEvolve/bin/python";
     updateCmdPreview();
   }
+
+  document.getElementById("run-exp-select").addEventListener("change", (e) => {
+    state.activeSlug = e.target.value;
+    state.expDetail = null;
+    renderRun();
+  });
 
   function updateCmdPreview() {
     if (!state.expDetail) return;
     const expPath = state.expDetail.path;
     const projRoot = expPath.replace(/\/generated_experiments\/[^/]+$/, "");
     const py = document.getElementById("r-python").value || "python";
-    const iters = document.getElementById("r-iterations").value || "10";
-    const out = document.getElementById("r-output").value.trim() || `${expPath}/run_<timestamp>`;
+    const iters = document.getElementById("r-iterations").value || "20";
+    const target = document.getElementById("r-target").value || "1.0";
     const cmd = [
       py,
       `${projRoot}/third_party/openevolve/openevolve-run.py`,
@@ -226,14 +345,15 @@
       "--config",
       `${expPath}/config.yaml`,
       "--output",
-      out,
+      `${expPath}/run_<timestamp>`,
       "--iterations",
       iters,
+      "--target-score",
+      target,
     ].join(" ");
     document.getElementById("r-cmd").textContent = cmd;
   }
-
-  ["r-iterations", "r-python", "r-output"].forEach((id) =>
+  ["r-iterations", "r-python", "r-target"].forEach((id) =>
     document.getElementById(id).addEventListener("input", updateCmdPreview)
   );
 
@@ -242,16 +362,18 @@
     btn.disabled = true;
     try {
       const r = await postJSON("/api/runs", {
-        slug: state.selectedSlug,
-        iterations: parseInt(document.getElementById("r-iterations").value, 10) || 10,
+        slug: state.activeSlug,
+        iterations: parseInt(document.getElementById("r-iterations").value, 10) || 20,
         python: document.getElementById("r-python").value,
-        output_dir: document.getElementById("r-output").value.trim() || null,
+        target_score: parseFloat(document.getElementById("r-target").value) || 1.0,
+        model: state.activeModel || undefined,
       });
       state.runId = r.run_id;
-      state.selectedRunId = r.run_id;
+      state.resultsRunId = r.run_id;
+      state.resultsSlug = state.activeSlug;
       const banner = document.getElementById("r-banner");
       banner.className = "banner success";
-      banner.innerHTML = `Launched · <span class="mono">PID ${r.pid}</span> · run <span class="mono">${r.run_id}</span>`;
+      banner.innerHTML = `Launched · <span class="mono">PID ${r.pid}</span> · model <span class="mono">${state.activeModel || "default"}</span> · stops at score ${document.getElementById("r-target").value}`;
       document.getElementById("r-logwrap").style.display = "block";
       document.getElementById("r-stop").disabled = false;
       startStatusPolling();
@@ -271,14 +393,6 @@
     }
   });
 
-  // ---------- status polling (drives rail + run log tail) ----------
-
-  function setRailStatus(stateName, text) {
-    const dot = document.getElementById("rail-status-dot");
-    dot.className = "status-dot" + (stateName ? " " + stateName : "");
-    document.getElementById("rail-status-text").textContent = text;
-  }
-
   function startStatusPolling() {
     if (state.statusTimer) clearInterval(state.statusTimer);
     const poll = async () => {
@@ -289,20 +403,14 @@
       } catch (e) {
         return;
       }
-      // rail
-      if (s.state === "running") {
-        setRailStatus("running", `Running · iter ${s.iters_done}`);
-      } else if (s.state === "done") {
-        setRailStatus("done", `Done · iter ${s.iters_done}`);
-      } else if (s.state === "error") {
-        setRailStatus("error", "Error");
-      } else {
-        setRailStatus("", "Idle");
-      }
-      // run log tail
-      const logtail = document.getElementById("r-logtail");
-      if (logtail) logtail.textContent = s.log_tail || "(no output yet)";
-      // stop polling + finalize when finished
+      if (s.state === "running") setTopStatus("running", `Running · iter ${s.iters_done}`);
+      else if (s.state === "done") setTopStatus("done", `Done · iter ${s.iters_done}`);
+      else if (s.state === "error") setTopStatus("error", "Error");
+      else setTopStatus("", "Idle");
+
+      const lt = document.getElementById("r-logtail");
+      if (lt) lt.textContent = s.log_tail || "(no output yet)";
+
       if (s.state !== "running") {
         document.getElementById("r-exec").disabled = false;
         document.getElementById("r-stop").disabled = true;
@@ -314,23 +422,28 @@
     state.statusTimer = setInterval(poll, 2000);
   }
 
-  // ---------- Results ----------
+  // ============================================================
+  // Results
+  // ============================================================
 
   async function renderResults() {
     const noexp = document.getElementById("res-noexp");
     const body = document.getElementById("res-body");
-    if (!state.selectedSlug) {
-      noexp.textContent = "Select an experiment first.";
+    const slug = state.resultsSlug || state.activeSlug;
+    if (!slug) {
       noexp.style.display = "block";
       body.style.display = "none";
       return;
     }
+    state.resultsSlug = slug;
+    fillExpSelect("res-exp-select", slug);
+
     let runs = [];
     try {
-      runs = await getJSON(`/api/experiments/${state.selectedSlug}/runs`);
+      runs = await getJSON(`/api/experiments/${slug}/runs`);
     } catch (e) {}
     if (!runs.length) {
-      noexp.textContent = "No runs yet for this experiment. Launch one from the Run tab.";
+      noexp.textContent = "No runs yet for this experiment.";
       noexp.style.display = "block";
       body.style.display = "none";
       return;
@@ -338,36 +451,41 @@
     noexp.style.display = "none";
     body.style.display = "block";
 
-    const sel = document.getElementById("res-run-select");
-    sel.innerHTML = "";
+    const runSel = document.getElementById("res-run-select");
+    runSel.innerHTML = "";
     runs.forEach((r) => {
-      const opt = document.createElement("option");
-      opt.value = r.run_id;
-      opt.textContent = r.run_id;
-      sel.appendChild(opt);
+      const o = document.createElement("option");
+      o.value = r.run_id;
+      o.textContent = r.run_id;
+      runSel.appendChild(o);
     });
-    // default to current/selected run if present
-    const want = state.selectedRunId && runs.find((r) => r.run_id === state.selectedRunId)
-      ? state.selectedRunId
-      : runs[0].run_id;
-    sel.value = want;
-    state.selectedRunId = want;
-
-    sel.onchange = () => {
-      state.selectedRunId = sel.value;
-      if (window.Lineage) window.Lineage.resetSelection();
-      loadResultsData();
-    };
+    const want =
+      state.resultsRunId && runs.find((r) => r.run_id === state.resultsRunId)
+        ? state.resultsRunId
+        : runs[0].run_id;
+    runSel.value = want;
+    state.resultsRunId = want;
 
     if (window.Lineage) window.Lineage.resetSelection();
+    window.__resultsSelected = false;
     loadResultsData();
   }
 
-  async function loadResultsData() {
-    const runId = state.selectedRunId;
-    if (!runId) return;
+  document.getElementById("res-exp-select").addEventListener("change", (e) => {
+    state.resultsSlug = e.target.value;
+    state.resultsRunId = null;
+    renderResults();
+  });
+  document.getElementById("res-run-select").addEventListener("change", (e) => {
+    state.resultsRunId = e.target.value;
+    if (window.Lineage) window.Lineage.resetSelection();
+    window.__resultsSelected = false;
+    loadResultsData();
+  });
 
-    // metrics from status + lineage
+  async function loadResultsData() {
+    const runId = state.resultsRunId;
+    if (!runId) return;
     let status = {},
       lineage = { nodes: [], best_id: null };
     try {
@@ -376,20 +494,15 @@
     try {
       lineage = await getJSON(`/api/runs/${runId}/lineage`);
     } catch (e) {}
-
     renderMetrics(status, lineage);
-
     if (window.Lineage) {
       window.Lineage.render(runId, lineage, onNodeClick);
-      // auto-select + open the best node once
       if (lineage.best_id && !window.__resultsSelected) {
         onNodeClick(lineage.best_id);
         window.Lineage.select(lineage.best_id);
         window.__resultsSelected = true;
       }
     }
-
-    // live refresh while running
     if (state.resultsTimer) {
       clearInterval(state.resultsTimer);
       state.resultsTimer = null;
@@ -406,7 +519,7 @@
   }
 
   async function refreshResultsLive() {
-    const runId = state.selectedRunId;
+    const runId = state.resultsRunId;
     if (!runId) return;
     let status = {},
       lineage = { nodes: [], best_id: null };
@@ -426,10 +539,8 @@
 
   function renderMetrics(status, lineage) {
     const nodes = (lineage && lineage.nodes) || [];
-    const realNodes = nodes.filter((n) => n.id !== "__root__");
-    const bestNode = lineage.best_id
-      ? realNodes.find((n) => n.id === lineage.best_id)
-      : null;
+    const real = nodes.filter((n) => n.id !== "__root__");
+    const bestNode = lineage.best_id ? real.find((n) => n.id === lineage.best_id) : null;
     const bestScore =
       bestNode && bestNode.score != null
         ? bestNode.score
@@ -438,13 +549,8 @@
         : null;
     const scoreCol = window.Lineage ? window.Lineage.scoreColor(bestScore) : "#fff";
     const cards = [
-      {
-        label: "Best score",
-        value: bestScore == null ? "—" : bestScore.toFixed(4),
-        color: scoreCol,
-        mono: true,
-      },
-      { label: "Candidates", value: realNodes.length },
+      { label: "Best score", value: bestScore == null ? "—" : bestScore.toFixed(4), color: scoreCol, mono: true },
+      { label: "Candidates", value: real.length },
       { label: "Iterations", value: status.iters_done != null ? status.iters_done : "—" },
       { label: "Wall time", value: fmtElapsed(status.elapsed), mono: true },
     ];
@@ -460,25 +566,23 @@
   }
 
   async function onNodeClick(nodeId) {
-    const runId = state.selectedRunId;
+    const runId = state.resultsRunId;
     if (!runId) return;
     try {
       const node = await getJSON(`/api/runs/${runId}/node/${nodeId}`);
       if (window.Lineage) window.Lineage.renderInspector(node);
-    } catch (e) {
-      // node may not be inspectable (e.g. synthetic root) — ignore quietly
-    }
+    } catch (e) {}
   }
 
   // ---------- init ----------
 
   (async function init() {
     try {
-      await loadExperiments();
+      await Promise.all([loadExperiments(), loadModels()]);
     } catch (e) {
-      console.error("Failed to load experiments", e);
+      console.error(e);
     }
-    setRailStatus("", "Idle");
+    setTopStatus("", "Idle");
     showScreen("compose");
   })();
 })();

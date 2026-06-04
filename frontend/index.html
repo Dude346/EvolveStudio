@@ -12,148 +12,149 @@
 <body>
   <!-- Top chrome -->
   <div class="topbar">
-    <div class="wordmark">Evolve<span class="dot">Studio</span></div>
-    <nav class="tabs">
-      <button class="tab active" data-screen="compose">Compose</button>
-      <button class="tab" data-screen="run">Run</button>
-      <button class="tab" data-screen="results">Results</button>
-    </nav>
+    <div class="topbar-left">
+      <div class="wordmark">Evolve<span class="dot">Studio</span></div>
+      <nav class="tabs">
+        <button class="tab active" data-screen="compose">Compose</button>
+        <button class="tab" data-screen="run">Run</button>
+        <button class="tab" data-screen="results">Results</button>
+      </nav>
+    </div>
+    <div class="topbar-right">
+      <span class="status-pill">
+        <span id="top-status-dot" class="status-dot"></span>
+        <span id="top-status-text">Idle</span>
+      </span>
+    </div>
   </div>
 
   <div class="shell">
-    <!-- Left rail -->
     <aside class="rail">
-      <div class="rail-section">
-        <h3>Experiment</h3>
-        <select id="rail-exp-select"></select>
-        <div id="rail-exp-meta" class="rail-exp-meta"></div>
-      </div>
-      <div class="rail-section">
-        <h3>Run status</h3>
-        <div class="status-line">
-          <span id="rail-status-dot" class="status-dot"></span>
-          <span id="rail-status-text">Idle</span>
-        </div>
-      </div>
+      <h3 class="rail-title">Model</h3>
+      <div id="model-list" class="model-list"></div>
+      <button id="model-refresh" class="rail-btn">↻ Refresh</button>
+      <div id="model-status" class="rail-note muted"></div>
+      <div class="rail-note muted" style="margin-top:14px">Used for both harness generation and the evolution loop.</div>
     </aside>
 
-    <!-- Main -->
     <main class="main">
 
-      <!-- ===== Compose ===== -->
-      <section class="screen active" id="screen-compose">
-        <div class="section-title">Compose an experiment</div>
-        <div class="section-sub">Type a problem, paste the three OpenEvolve input files, save.</div>
+    <!-- ===== Compose (chat-like) ===== -->
+    <section class="screen active" id="screen-compose">
+      <div class="hero">
+        <div class="hero-title">What do you want to evolve?</div>
+        <div class="hero-sub">Paste a problem — LeetCode, Project Euler, a coding-interview question. A local model (gpt-oss:20b) reads it and builds the test harness for you.</div>
+        <textarea id="gen-input" class="gen-input" spellcheck="false"
+          placeholder="Paste your problem here.
 
-        <div class="chips" id="demo-chips">
-          <button class="chip" data-demo="bubble_sort">
-            <div class="chip-title">Bubble sort</div>
-            <div class="chip-sub">8 unit tests · easy</div>
-          </button>
-          <button class="chip" data-demo="edit_distance">
-            <div class="chip-title">Edit distance</div>
-            <div class="chip-sub">naive recursion · must evolve to DP</div>
-          </button>
-          <button class="chip" data-demo="euler">
-            <div class="chip-title">Euler #1</div>
-            <div class="chip-sub">single-answer numeric</div>
-          </button>
+Example: Given an array of integers nums and an integer target, return indices of the two numbers that add up to target…"></textarea>
+        <button id="gen-btn" class="btn btn-primary btn-full">Generate harness</button>
+        <div class="hero-foot muted">No presets, no manual files — the harness is generated on the fly.</div>
+      </div>
+
+      <!-- live generation -->
+      <div id="gen-progress" class="gen-progress" style="display:none">
+        <div class="gen-status">
+          <span class="spinner"></span>
+          <span id="gen-status-text">Reading the problem and writing tests…</span>
         </div>
+        <pre id="gen-stream" class="gen-stream"></pre>
+      </div>
 
-        <div class="stack">
+      <!-- generated harness review -->
+      <div id="gen-result" class="gen-result" style="display:none">
+        <div class="result-head">
+          <input type="text" id="g-title" class="result-title" />
+          <div class="muted mono" id="g-slug"></div>
+        </div>
+        <div class="result-meta" id="g-meta"></div>
+
+        <div class="filetabs" id="g-filetabs">
+          <button class="filetab active" data-file="initial">initial_program.py</button>
+          <button class="filetab" data-file="evaluator">evaluator.py</button>
+          <button class="filetab" data-file="config">config.yaml</button>
+        </div>
+        <textarea class="editor" id="g-initial" spellcheck="false"></textarea>
+        <textarea class="editor hidden" id="g-evaluator" spellcheck="false"></textarea>
+        <textarea class="editor hidden" id="g-config" spellcheck="false"></textarea>
+
+        <div class="btn-row" style="margin-top:16px">
+          <button class="btn" id="g-regen">Regenerate</button>
+          <button class="btn btn-primary" id="g-saverun">Save &amp; go to Run</button>
+        </div>
+      </div>
+    </section>
+
+    <!-- ===== Run ===== -->
+    <section class="screen" id="screen-run">
+      <div id="run-noexp" class="placeholder">Generate a harness first (Compose tab).</div>
+      <div id="run-body" style="display:none">
+        <div class="exp-header">
           <div>
-            <label class="field-label">Title</label>
-            <input type="text" id="c-title" placeholder="A one-line name for the problem" />
-            <div class="slug-preview">Will save as <span class="mono" id="c-slug">generated_experiments/…/</span></div>
-          </div>
-          <div>
-            <label class="field-label">Problem statement</label>
-            <textarea id="c-statement" rows="3" placeholder="What should the program do? (Plain English — feeds the LLM's system prompt.)"></textarea>
-          </div>
-        </div>
-
-        <div style="margin-top:18px">
-          <div class="filetabs" id="c-filetabs">
-            <button class="filetab active" data-file="initial">initial_program.py</button>
-            <button class="filetab" data-file="evaluator">evaluator.py</button>
-            <button class="filetab" data-file="config">config.yaml</button>
-          </div>
-          <textarea class="editor" id="c-initial" spellcheck="false" placeholder="# Paste your starting program here, with EVOLVE-BLOCK markers around the part to evolve."></textarea>
-          <textarea class="editor hidden" id="c-evaluator" spellcheck="false" placeholder="# Paste your evaluator. Must define evaluate(program_path) returning a dict or EvaluationResult."></textarea>
-          <textarea class="editor hidden" id="c-config" spellcheck="false" placeholder="# Paste your OpenEvolve config YAML here."></textarea>
-        </div>
-
-        <div style="margin-top:18px">
-          <button class="btn btn-primary btn-full" id="c-save">Save experiment</button>
-        </div>
-      </section>
-
-      <!-- ===== Run ===== -->
-      <section class="screen" id="screen-run">
-        <div id="run-noexp" class="placeholder">Compose or select an experiment first.</div>
-        <div id="run-body" style="display:none">
-          <div class="run-head">
+            <div class="exp-eyebrow">Running experiment</div>
             <div class="run-slug mono" id="r-slug"></div>
-            <div class="run-path" id="r-path"></div>
           </div>
-
-          <div class="field-row">
-            <div>
-              <label class="field-label">Iterations</label>
-              <input type="number" id="r-iterations" min="1" max="10000" value="10" />
-            </div>
-            <div>
-              <label class="field-label">Python interpreter</label>
-              <input type="text" id="r-python" />
-            </div>
-          </div>
-          <div style="margin-top:16px">
-            <label class="field-label">Output directory (blank = timestamped default)</label>
-            <input type="text" id="r-output" placeholder="" />
-          </div>
-
-          <details class="cmd">
-            <summary>Command preview</summary>
-            <pre id="r-cmd"></pre>
-          </details>
-
-          <div class="btn-row">
-            <button class="btn btn-primary" id="r-exec">Execute OpenEvolve</button>
-            <button class="btn" id="r-stop" disabled>Stop</button>
-          </div>
-
-          <div id="r-banner"></div>
-          <div id="r-logwrap" style="display:none">
-            <label class="field-label" style="margin-top:16px">Live log tail</label>
-            <div class="logtail mono" id="r-logtail"></div>
-          </div>
-
-          <div class="hint">Prereqs: <span class="mono">ollama serve</span> on :11434, and <span class="mono">gpt-oss:20b</span> pulled.</div>
+          <select id="run-exp-select" class="exp-switch"></select>
         </div>
-      </section>
+        <div class="run-path mono" id="r-path"></div>
 
-      <!-- ===== Results ===== -->
-      <section class="screen" id="screen-results">
-        <div id="res-noexp" class="placeholder">Select an experiment with at least one run.</div>
-        <div id="res-body" style="display:none">
-          <div style="margin-bottom:18px;max-width:320px">
-            <label class="field-label">Run</label>
-            <select id="res-run-select"></select>
+        <div class="field-row" style="margin-top:18px">
+          <div>
+            <label class="field-label">Max iterations</label>
+            <input type="number" id="r-iterations" min="1" max="10000" value="20" />
           </div>
-
-          <div class="metrics" id="res-metrics"></div>
-
-          <div class="results-split">
-            <div class="graph-panel">
-              <svg id="lineage-svg"></svg>
-              <div class="graph-empty" id="graph-empty">No candidates yet — results populate live.</div>
-            </div>
-            <div class="inspector" id="inspector">
-              <div class="insp-empty">Click a node in the tree to inspect its code and diff.</div>
-            </div>
+          <div>
+            <label class="field-label">Stop when score reaches</label>
+            <input type="number" id="r-target" min="0" max="1" step="0.01" value="1.0" />
           </div>
         </div>
-      </section>
+        <div style="margin-top:14px">
+          <label class="field-label">Python interpreter</label>
+          <input type="text" id="r-python" />
+        </div>
+
+        <details class="cmd">
+          <summary>Command preview</summary>
+          <pre id="r-cmd"></pre>
+        </details>
+
+        <div class="btn-row">
+          <button class="btn btn-primary" id="r-exec">Execute</button>
+          <button class="btn" id="r-stop" disabled>Stop</button>
+        </div>
+
+        <div id="r-banner"></div>
+        <div id="r-logwrap" style="display:none">
+          <label class="field-label" style="margin-top:16px">Live log</label>
+          <div class="logtail mono" id="r-logtail"></div>
+        </div>
+
+        <div class="hint">Stops automatically once a candidate reaches the target score, so it won't waste compute. Prereqs: <span class="mono">ollama serve</span> on :11434, <span class="mono">gpt-oss:20b</span> pulled.</div>
+      </div>
+    </section>
+
+    <!-- ===== Results ===== -->
+    <section class="screen" id="screen-results">
+      <div id="res-noexp" class="placeholder">Run an experiment to see results.</div>
+      <div id="res-body" style="display:none">
+        <div class="exp-header">
+          <select id="res-exp-select" class="exp-switch"></select>
+          <select id="res-run-select" class="exp-switch"></select>
+        </div>
+
+        <div class="metrics" id="res-metrics"></div>
+
+        <div class="results-split">
+          <div class="graph-panel">
+            <svg id="lineage-svg"></svg>
+            <div class="graph-empty" id="graph-empty">No candidates yet — results populate live.</div>
+          </div>
+          <div class="inspector" id="inspector">
+            <div class="insp-empty">Click a node in the tree to inspect its code and diff.</div>
+          </div>
+        </div>
+      </div>
+    </section>
 
     </main>
   </div>

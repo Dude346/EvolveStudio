@@ -80,7 +80,11 @@ def list_runs(exp_dir: Path) -> list[Path]:
 
 
 def build_argv(
-    exp_dir: Path, iterations: Optional[int], output_dir: Path, python_exe: str
+    exp_dir: Path,
+    iterations: Optional[int],
+    output_dir: Path,
+    python_exe: str,
+    target_score: Optional[float] = None,
 ) -> list[str]:
     argv = [
         python_exe,
@@ -94,6 +98,9 @@ def build_argv(
     ]
     if iterations is not None:
         argv += ["--iterations", str(iterations)]
+    if target_score is not None:
+        # OpenEvolve stops as soon as a candidate's combined_score >= target.
+        argv += ["--target-score", str(target_score)]
     return argv
 
 
@@ -132,6 +139,39 @@ def save_experiment_from_text(
     }
     (exp_dir / "metadata.json").write_text(json.dumps(meta, indent=2) + "\n")
     return exp_dir
+
+
+def set_experiment_model(slug: str, model: str) -> bool:
+    """Rewrite the `primary_model:` line in an experiment's config.yaml.
+
+    Used to set the evolution-loop model just before a run. Returns True if a
+    line was rewritten.
+    """
+    cfg = GENERATED_ROOT / slug / "config.yaml"
+    if not cfg.is_file() or not model:
+        return False
+    out, replaced = [], False
+    for line in cfg.read_text().splitlines(keepends=True):
+        if not replaced and line.lstrip().startswith("primary_model:"):
+            indent = line[: len(line) - len(line.lstrip())]
+            out.append(f'{indent}primary_model: "{model}"\n')
+            replaced = True
+        else:
+            out.append(line)
+    if replaced:
+        cfg.write_text("".join(out))
+    return replaced
+
+
+def get_experiment_model(slug: str) -> Optional[str]:
+    """Read the `primary_model:` from an experiment's config.yaml (or None)."""
+    cfg = GENERATED_ROOT / slug / "config.yaml"
+    if not cfg.is_file():
+        return None
+    for line in cfg.read_text().splitlines():
+        if line.lstrip().startswith("primary_model:"):
+            return line.split(":", 1)[1].strip().strip('"').strip("'")
+    return None
 
 
 def _read_metadata(exp_dir: Path) -> dict:
