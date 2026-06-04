@@ -163,7 +163,14 @@ def generate_stream(body: GenerateBody) -> StreamingResponse:
     return StreamingResponse(
         event_gen(),
         media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            # Force the browser to NOT reuse this keep-alive connection for the
+            # next request. Safari otherwise reuses the streamed connection and
+            # the following POST (the Save call) fails with "Load failed".
+            "Connection": "close",
+        },
     )
 
 

@@ -21,6 +21,11 @@
       </nav>
     </div>
     <div class="topbar-right">
+      <div class="model-picker" title="Model used for harness generation and the evolution loop">
+        <span class="muted model-picker-label">Model</span>
+        <select id="model-select" class="topbar-select"></select>
+        <button id="model-refresh" class="icon-btn" title="Refresh installed models">↻</button>
+      </div>
       <span class="status-pill">
         <span id="top-status-dot" class="status-dot"></span>
         <span id="top-status-text">Idle</span>
@@ -28,16 +33,7 @@
     </div>
   </div>
 
-  <div class="shell">
-    <aside class="rail">
-      <h3 class="rail-title">Model</h3>
-      <div id="model-list" class="model-list"></div>
-      <button id="model-refresh" class="rail-btn">↻ Refresh</button>
-      <div id="model-status" class="rail-note muted"></div>
-      <div class="rail-note muted" style="margin-top:14px">Used for both harness generation and the evolution loop.</div>
-    </aside>
-
-    <main class="main">
+  <main class="main">
 
     <!-- ===== Compose (chat-like) ===== -->
     <section class="screen active" id="screen-compose">
@@ -156,8 +152,7 @@ Example: Given an array of integers nums and an integer target, return indices o
       </div>
     </section>
 
-    </main>
-  </div>
+  </main>
 
   <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
   <script src="/lineage.js"></script>

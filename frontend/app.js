@@ -38,6 +38,21 @@
       body: JSON.stringify(body),
     });
 
+  // Like postJSON, but retries once on a transient network error ("Load
+  // failed" / "Failed to fetch"). Safe only for idempotent calls (save).
+  async function postJSONRetry(p, body) {
+    try {
+      return await postJSON(p, body);
+    } catch (e) {
+      const msg = (e && e.message) || "";
+      if (/load failed|failed to fetch|networkerror/i.test(msg)) {
+        await new Promise((r) => setTimeout(r, 250));
+        return await postJSON(p, body);
+      }
+      throw e;
+    }
+  }
+
   function slugify(s) {
     return (
       (s || "")
@@ -101,10 +116,9 @@
     if (selected) sel.value = selected;
   }
 
-  // ---------- models (sidebar) ----------
+  // ---------- model picker (top-bar dropdown) ----------
 
   async function loadModels() {
-    const statusEl = document.getElementById("model-status");
     let r;
     try {
       r = await getJSON("/api/models");
@@ -113,42 +127,40 @@
     }
     state.models = r.models || [];
     state.defaultModel = r.default;
-    if (!state.models.length) {
-      // Ollama unreachable or no chat models.
-      state.models = state.defaultModel ? [state.defaultModel] : [];
-      statusEl.textContent = "⚠ Ollama not reachable — is `ollama serve` running?";
-    } else {
-      statusEl.textContent = `${state.models.length} models installed`;
-    }
-    // Keep a valid active model.
+    if (!state.models.length && state.defaultModel) state.models = [state.defaultModel];
     if (!state.activeModel || !state.models.includes(state.activeModel)) {
       state.activeModel =
         state.defaultModel && state.models.includes(state.defaultModel)
           ? state.defaultModel
           : state.models[0] || null;
     }
-    renderModelRail();
+    renderModelSelect();
   }
 
-  function renderModelRail() {
-    const list = document.getElementById("model-list");
-    list.innerHTML = "";
+  function renderModelSelect() {
+    const sel = document.getElementById("model-select");
+    sel.innerHTML = "";
     if (!state.models.length) {
-      list.innerHTML = '<div class="rail-note">No models found.</div>';
+      const o = document.createElement("option");
+      o.value = "";
+      o.textContent = "Ollama not reachable";
+      sel.appendChild(o);
+      sel.disabled = true;
       return;
     }
+    sel.disabled = false;
     state.models.forEach((m) => {
-      const item = document.createElement("button");
-      item.className = "model-item" + (m === state.activeModel ? " selected" : "");
-      item.innerHTML = `<span class="model-radio"></span><span>${m}</span>`;
-      item.addEventListener("click", () => {
-        state.activeModel = m;
-        renderModelRail();
-      });
-      list.appendChild(item);
+      const o = document.createElement("option");
+      o.value = m;
+      o.textContent = m;
+      sel.appendChild(o);
     });
+    if (state.activeModel) sel.value = state.activeModel;
   }
 
+  document.getElementById("model-select").addEventListener("change", (e) => {
+    state.activeModel = e.target.value;
+  });
   document.getElementById("model-refresh").addEventListener("click", loadModels);
 
   // ============================================================
@@ -231,6 +243,12 @@
       }
     } catch (e) {
       return failGen("Stream interrupted: " + e.message);
+    } finally {
+      // Release the streamed connection so the browser doesn't reuse it for
+      // the next request (Safari otherwise fails the Save with "Load failed").
+      try {
+        await reader.cancel();
+      } catch (e) {}
     }
     genEls.btn.disabled = false;
   }
@@ -275,7 +293,7 @@
     genEls.saverun.disabled = true;
     genEls.saverun.textContent = "Saving…";
     try {
-      const r = await postJSON("/api/experiments", {
+      const r = await postJSONRetry("/api/experiments", {
         title: genEls.title.value.trim() || "Generated problem",
         statement: state.genStatement,
         initial_program: genEls.initial.value,

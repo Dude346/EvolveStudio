@@ -18,6 +18,7 @@ Robustness:
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
@@ -58,7 +59,9 @@ Hard rules:
 - "expected" is the correct return value. COMPUTE IT CAREFULLY — wrong expected values
   make a correct solution look wrong.
 - Use ONLY JSON literals in args/expected (numbers, strings, booleans, null, lists,
-  objects). No Python expressions, no function calls, no comments.
+  objects). NEVER write an expression. WRONG: {"args": ["a"*100]}. RIGHT: write the
+  value out in full, or use a short input you can write literally like {"args": ["aaaa"]}.
+  No `*`, no `+`, no function calls, no comments. Keep test inputs small enough to spell out.
 - "baseline_code" is the function BODY ONLY (no `def` line). Write it at top-level
   indentation (the harness indents it). It must be valid Python and should actually
   attempt the problem (a simple/naive approach is fine and even preferred — leave room
@@ -130,6 +133,14 @@ def _extract_json(text: str) -> dict:
     try:
         return json.loads(candidate)
     except json.JSONDecodeError as e:
+        # Fallback: the model may have emitted Python-style output (single
+        # quotes, True/False/None). ast.literal_eval handles those safely.
+        try:
+            obj = ast.literal_eval(candidate)
+            if isinstance(obj, dict):
+                return obj
+        except (ValueError, SyntaxError):
+            pass
         raise HarnessGenError(f"model output was not valid JSON: {e}")
 
 
