@@ -8,6 +8,19 @@ A local workbench on top of [OpenEvolve](https://github.com/algorithmicsuperinte
 
 The UI is a thin **FastAPI** backend serving a static **vanilla-JS + D3** frontend. (A legacy Streamlit GUI is kept alongside it.)
 
+> **CS 153 — The One-Person Frontier Lab.** Project track: **Application / Product** (a developer tool / workbench). Solo project. See [AI Usage Disclosure](#ai-usage-disclosure) and [Attribution](#attribution) below for how this was built and what is original vs. borrowed.
+
+---
+
+## Problem & insight
+
+Evolutionary code generation (AlphaEvolve / OpenEvolve) is powerful but hard to *use and understand*: you hand it three hand-written files (a seed program, an evaluator, a config), kick off a long run, and get back a pile of JSON checkpoints and logs. The two real bottlenecks are (1) **setting up an experiment** is manual and fiddly, and (2) **seeing what evolution actually did** — which mutations helped, which were dead ends, why a candidate failed — is opaque.
+
+EvolveStudio attacks both, entirely on local hardware (no cloud, no API keys):
+
+- **Lower the setup cost to one paragraph of English.** A local LLM reads a problem statement and writes the harness, so you go from idea to a running experiment in one step.
+- **Make the search legible.** The signature feature is a **clickable lineage tree** — every candidate program is a node colored by score, the winning ancestry is highlighted, and clicking a node shows its code and the exact diff against its parent. You can *watch* a naive solution evolve into an efficient one.
+
 ---
 
 ## What it does
@@ -189,6 +202,24 @@ Every subcommand supports `--help`.
 
 ---
 
+## Evaluation & evidence
+
+How I validated that the pieces actually work (not just that they run):
+
+- **Evaluator correctness.** The generated `evaluator.py` is smoke-tested against its own baseline via `python -m evolvestudio.cli evaluate <exp>`. Confirmed scores: bubble sort **8/8**, edit distance **11/14** (the 3 failures are genuine 2s timeouts on the largest inputs), Project Euler #1 **exact (233168)**.
+- **The OpenEvolve contract.** A subtle bug was caught here and fixed: the per-test timeout originally used `SIGALRM`, which raises *"signal only works in main thread"* inside OpenEvolve's worker threads — making **every** candidate score 0. Verified the daemon-thread replacement returns the correct score from a non-main thread, then confirmed end-to-end that a real `gpt-oss:20b` run produces non-zero scores.
+- **Full pipeline, real run.** Launched real evolution runs through the API (not mocks) and verified the lineage JSON, per-node code/diff, live status, and early-stop (log: *"Target score 1.0 reached at iteration 1"*).
+- **Defensive parsing.** The visualizer was tested against synthetic run dirs with missing/malformed files (truncated JSONL, absent `best/`) to confirm it degrades gracefully instead of crashing.
+
+### Known limitations (honest failure analysis)
+
+- **LLM-written test values can be wrong.** Because the model supplies each test's expected output, a miscomputed value makes a *correct* solution look broken (observed on a Coin Change problem where the model claimed `min_coins([2,3,7],12)=4` when the answer is 3). Mitigation: review the generated test cases in the Compose step before saving. (A reference-solution grading approach that fixes this automatically exists on a development branch and is on the roadmap.)
+- **Diff-format fragility.** With `diff_based_evolution: true`, `gpt-oss:20b` sometimes can't produce the SEARCH/REPLACE format OpenEvolve expects, logging *"No valid diffs found"* and stalling a run. Switching to full-rewrite mode resolves it; this trade-off is documented and being folded in.
+- **Python + small literal inputs cap the efficiency signal.** Test inputs are LLM-written literals, so they can't be huge; pressure to optimize comes mainly from per-test timeouts on exponential baselines.
+- **POSIX-only**; single local user; no auth (it binds to localhost by design).
+
+---
+
 ## Roadmap
 
 - [x] **LLM-driven scaffolding** — paste a problem statement, a local model generates the harness (baseline + test cases). Done.
@@ -203,13 +234,26 @@ Every subcommand supports `--help`.
 
 ---
 
-## Acknowledgements
+## Attribution
 
-Built as a project for **CS 153 (Stanford)**.
+This project is a **workbench built on top of, not a fork of,** [**OpenEvolve**](https://github.com/algorithmicsuperintelligence/openevolve) (Apache-2.0), an open-source implementation of DeepMind's AlphaEvolve. OpenEvolve is cloned unmodified into `third_party/openevolve/` (gitignored; the README's Quick Start clones it) and used as a library/CLI — **I did not change its source.**
 
-Heavy lifting by:
+**What OpenEvolve provides (borrowed):** the entire evolutionary engine — the MAP-Elites/island controller, the LLM mutation loop, candidate evaluation, checkpointing, and the `evolution_trace.jsonl` output format.
 
-- [**OpenEvolve**](https://github.com/algorithmicsuperintelligence/openevolve) — the evolutionary engine under the hood.
-- [**Ollama**](https://ollama.com/) — local LLM serving with an OpenAI-compatible API.
-- [**FastAPI**](https://fastapi.tiangolo.com/) + [**D3**](https://d3js.org/) — the web backend and the lineage visualization.
-- [**Streamlit**](https://streamlit.io/) — the legacy GUI.
+**What I built (original work in `evolvestudio/` + `frontend/`):**
+
+- **Harness generator** (`harness_gen.py`) — turns a natural-language problem into the seed program + unit-test evaluator + config via a local LLM, with defensive JSON parsing.
+- **Compiler** (`compiler/`) — deterministic, contract-correct generation of `initial_program.py` / `evaluator.py` / `config.yaml`, including the thread-based per-test timeout fix.
+- **Runner** (`runner/process.py`) — detached process-group launch/stop/status with an on-disk run registry surviving server restarts.
+- **Visualizer** (`visualizer/` + `server/lineage.py`) — defensive parsing of run output into the lineage/score/diff JSON.
+- **FastAPI backend** (`server/`) and the **vanilla-JS + D3 frontend** (`frontend/`) — the clickable lineage tree, inspector, model picker, and streaming generation. None of this is from OpenEvolve.
+
+Other tools used as dependencies: [Ollama](https://ollama.com/) (local model serving), [FastAPI](https://fastapi.tiangolo.com/), [D3](https://d3js.org/), [Streamlit](https://streamlit.io/) (the legacy GUI).
+
+## AI Usage Disclosure
+
+AI tools were used heavily throughout, as encouraged by the course. Specifically:
+
+- **The product itself is AI-powered.** EvolveStudio runs entirely on a local LLM ([Ollama](https://ollama.com/) `gpt-oss:20b` by default): the LLM generates each experiment's harness, and OpenEvolve uses the LLM to mutate code every iteration. No cloud AI APIs are called.
+- **Development assistance.** I used **Anthropic's Claude (via Claude Code)** as a pair-programmer to scaffold the package, write and debug the FastAPI backend and D3 frontend, design the evaluator/timeout logic, and diagnose bugs (e.g., the SIGALRM-in-worker-threads issue and the Safari streaming-connection bug). All AI-assisted code was reviewed, tested, and iterated on by me; design decisions, the architecture, and the debugging direction were mine.
+- **Built for CS 153 (Stanford)** — *The One-Person Frontier Lab.*
